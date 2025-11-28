@@ -9,9 +9,11 @@ import { userDataContext } from "../context/UserContext";
 import { useNavigate } from "react-router-dom";
 import axios from "axios";
 import aiImg from "../assets/ai.gif";
-import { CgMenuRight } from "react-icons/cg";
+import { CgMenuLeft } from "react-icons/cg";
 import { RxCross1 } from "react-icons/rx";
 import userImg from "../assets/user.gif";
+import { FiSend } from "react-icons/fi"; // For send icon
+
 function Home() {
   const { userData, serverUrl, setUserData, getGeminiResponse } =
     useContext(userDataContext);
@@ -19,18 +21,24 @@ function Home() {
   const [_listening, setListening] = useState(false);
   const [userText, setUserText] = useState("");
   const [aiText, setAiText] = useState("");
+  const [chatInput, setChatInput] = useState(""); // New state for chat input
   const isSpeakingRef = useRef(false);
   const recognitionRef = useRef(null);
   const [ham, setHam] = useState(false);
   const isRecognizingRef = useRef(false);
   const greetingSpokenRef = useRef(false);
   const synth = window.speechSynthesis;
-  const [ttsEnabled, setTtsEnabled] = useState(false);
-  const pendingSpeechRef = useRef(null);
+  // const [ttsEnabled, setTtsEnabled] = useState(true); // TTS enabled by default
+  // const pendingSpeechRef = useRef(null);
   const [voices, setVoices] = useState([]);
   const [selectedVoice, setSelectedVoice] = useState(
     localStorage.getItem("ttsVoice") || ""
   );
+  const [showDropdown, setShowDropdown] = useState(false); // New state for profile dropdown
+
+  // Refs for outside click detection
+  const hamburgerRef = useRef(null);
+  const profileDropdownRef = useRef(null);
 
   const handleLogOut = async () => {
     try {
@@ -43,7 +51,31 @@ function Home() {
       setUserData(null);
       console.log(error);
     }
+    setShowDropdown(false); // Close dropdown after logout
   };
+
+  // Outside click handler for hamburger and profile dropdown
+  useEffect(() => {
+    const handleClickOutside = (event) => {
+      if (
+        hamburgerRef.current &&
+        !hamburgerRef.current.contains(event.target)
+      ) {
+        setHam(false);
+      }
+      if (
+        profileDropdownRef.current &&
+        !profileDropdownRef.current.contains(event.target)
+      ) {
+        setShowDropdown(false);
+      }
+    };
+
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => {
+      document.removeEventListener("mousedown", handleClickOutside);
+    };
+  }, []);
 
   const startRecognition = useCallback(() => {
     if (!isSpeakingRef.current && !isRecognizingRef.current) {
@@ -60,12 +92,7 @@ function Home() {
 
   const speak = useCallback(
     (text) => {
-      // If TTS not enabled by a user gesture, queue the speech and prompt user to enable
-      if (!ttsEnabled) {
-        pendingSpeechRef.current = text;
-        return;
-      }
-
+      // TTS is enabled by default, speak directly
       const utterence = new SpeechSynthesisUtterance(text);
       // prefer selected voice, fallback to hi-IN or first available
       const availableVoices = window.speechSynthesis.getVoices() || [];
@@ -87,21 +114,8 @@ function Home() {
       synth.cancel(); // 🛑 pehle se koi speech ho to band karo
       synth.speak(utterence);
     },
-    [ttsEnabled, synth, startRecognition, selectedVoice]
+    [synth, startRecognition, selectedVoice]
   );
-
-  const enableTTS = useCallback(() => {
-    // This must be called from a user gesture to satisfy browser autoplay policies
-    setTtsEnabled(true);
-    const pending = pendingSpeechRef.current;
-    if (pending) {
-      // small timeout to ensure state updates
-      setTimeout(() => {
-        speak(pending);
-        pendingSpeechRef.current = null;
-      }, 50);
-    }
-  }, [speak]);
 
   // Load available TTS voices and watch for changes
   useEffect(() => {
@@ -109,8 +123,10 @@ function Home() {
       const v = window.speechSynthesis.getVoices() || [];
       setVoices(v);
       if (!selectedVoice && v.length) {
-        setSelectedVoice(v[0].name);
-        localStorage.setItem("ttsVoice", v[0].name);
+        // Default to hi-IN voice if available, else first available
+        const defaultVoice = v.find((voice) => voice.lang === "hi-IN") || v[0];
+        setSelectedVoice(defaultVoice.name);
+        localStorage.setItem("ttsVoice", defaultVoice.name);
       }
     };
     loadVoices();
@@ -125,8 +141,8 @@ function Home() {
     if (selectedVoice) localStorage.setItem("ttsVoice", selectedVoice);
   }, [selectedVoice]);
 
-  useEffect(() => {
-    const handleCommand = (data) => {
+  const handleCommand = useCallback(
+    (data) => {
       const { type, userInput, response } = data;
       speak(response);
 
@@ -154,8 +170,29 @@ function Home() {
           "_blank"
         );
       }
-    };
+    },
+    [speak]
+  );
 
+  const handleChatSubmit = async (e) => {
+    e.preventDefault();
+    if (!chatInput.trim()) return;
+    setUserText(chatInput);
+    setAiText("");
+    const data = await getGeminiResponse(chatInput);
+    console.log("Chat Response data:", data);
+    if (data && data.response) {
+      handleCommand(data);
+      setAiText(data.response);
+    } else {
+      speak("Sorry, I couldn't understand that. Please try again.");
+      setAiText("Error: No response");
+    }
+    setChatInput("");
+    setUserText("");
+  };
+
+  useEffect(() => {
     const SpeechRecognition =
       window.SpeechRecognition || window.webkitSpeechRecognition;
     const recognition = new SpeechRecognition();
@@ -265,14 +302,6 @@ function Home() {
       }
     };
 
-    // Don't speak greeting without user interaction - this will be done on first recognition start
-    // Browsers require user interaction before playing audio
-    // const greeting = new SpeechSynthesisUtterance(
-    //   `Hello ${userData.name}, what can I help you with?`
-    // );
-    // greeting.lang = "hi-IN";
-    // window.speechSynthesis.speak(greeting);
-
     return () => {
       isMounted = false;
       clearTimeout(startTimeout);
@@ -286,103 +315,149 @@ function Home() {
     getGeminiResponse,
     speak,
     selectedVoice,
+    handleCommand,
   ]);
 
   return (
-    <div className="w-full h-[100vh] bg-gradient-to-t from-[black] to-[#02023d] flex justify-center items-center flex-col gap-[15px] overflow-hidden">
-      <CgMenuRight
-        className="lg:hidden text-white absolute top-[20px] right-[20px] w-[25px] h-[25px]"
+    <div className="w-full h-screen bg-black flex justify-center items-center flex-col gap-4 overflow-hidden relative">
+      {/* Hamburger Menu Icon */}
+      <CgMenuLeft
+        className={`text-white absolute top-5 left-5 w-8 h-8 cursor-pointer z-10 transition-all duration-300 hover:scale-110 ${
+          ham ? "hidden" : ""
+        }`}
         onClick={() => setHam(true)}
       />
+
+      {/* Profile Icon with First Letter, Gradient, and Glow */}
       <div
-        className={`absolute lg:hidden top-0 w-full h-full bg-[#00000053] backdrop-blur-lg p-[20px] flex flex-col gap-[20px] items-start ${
-          ham ? "translate-x-0" : "translate-x-full"
-        } transition-transform`}
+        className="absolute top-5 right-5 w-8 h-8 rounded-full bg-gradient-to-r from-blue-500 via-purple-500 to-pink-500 flex items-center justify-center text-white font-bold text-lg cursor-pointer z-10 transition-all duration-300 hover:scale-110 animate-pulse shadow-lg shadow-blue-500/50"
+        onClick={() => setShowDropdown(!showDropdown)}
+        title="Profile"
+        style={{
+          boxShadow:
+            "0 0 20px rgba(59, 130, 246, 0.5), 0 0 40px rgba(147, 51, 234, 0.5), 0 0 60px rgba(236, 72, 153, 0.5)",
+        }}
+      >
+        {userData?.name ? userData.name[0].toUpperCase() : "U"}
+      </div>
+
+      {/* Profile Dropdown */}
+      {showDropdown && (
+        <div
+          ref={profileDropdownRef}
+          className="absolute top-14 right-5 bg-white/95 backdrop-blur-md rounded-xl shadow-2xl p-4 z-30 min-w-[250px] border border-gray-200"
+        >
+          <div className="flex flex-col gap-3">
+            <div className="text-center">
+              <h3 className="text-lg font-semibold text-gray-800">
+                {userData?.name}
+              </h3>
+              <p className="text-sm text-gray-600">{userData?.email}</p>
+            </div>
+            <button
+              className="w-full bg-red-500 hover:bg-red-600 text-white font-semibold py-2 px-4 rounded-lg transition-all duration-200 cursor-pointer"
+              onClick={handleLogOut}
+            >
+              Log Out
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Hamburger Menu */}
+      <div
+        ref={hamburgerRef}
+        className={`absolute top-0 left-0 w-full sm:w-80 h-full bg-black/80 backdrop-blur-xl p-6 flex flex-col gap-6 items-start z-20 transform transition-transform duration-300 ease-in-out ${
+          ham ? "translate-x-0" : "-translate-x-full"
+        }`}
       >
         <RxCross1
-          className=" text-white absolute top-[20px] right-[20px] w-[25px] h-[25px]"
+          className="text-white absolute top-5 right-5 w-8 h-8 cursor-pointer font-bold transition-all duration-200 hover:scale-110"
           onClick={() => setHam(false)}
         />
+
         <button
-          className="min-w-[150px] h-[60px]  text-black font-semibold   bg-white rounded-full cursor-pointer text-[19px] "
-          onClick={handleLogOut}
-        >
-          Log Out
-        </button>
-        <button
-          className="min-w-[150px] h-[60px]  text-black font-semibold  bg-white  rounded-full cursor-pointer text-[19px] px-[20px] py-[10px] "
+          className="min-w-12 h-14 text-black font-semibold bg-gradient-to-r from-blue-400 to-purple-500 rounded-full cursor-pointer text-base px-6 py-3 shadow-lg hover:shadow-xl transition-all duration-200"
           onClick={() => navigate("/customize")}
         >
           Customize your Assistant
         </button>
 
-        <div className="w-full h-[2px] bg-gray-400"></div>
-        <h1 className="text-white font-semibold text-[19px]">History</h1>
+        {/* Voice Selector */}
+        <div className="flex flex-col gap-3">
+          <label className="text-white font-semibold text-lg">
+            Select accent of your assistant
+          </label>
+          <select
+            value={selectedVoice}
+            onChange={(e) => setSelectedVoice(e.target.value)}
+            className="bg-white/90 text-black p-3 rounded-lg w-full max-w-52 overflow-hidden shadow-md"
+            style={{ textOverflow: "ellipsis" }}
+          >
+            {voices.length === 0 && <option>Loading voices...</option>}
+            {voices.map((v) => (
+              <option key={v.name} value={v.name} className="truncate">
+                {v.name.length > 20 ? `${v.name.substring(0, 20)}...` : v.name}{" "}
+                ({v.lang})
+              </option>
+            ))}
+          </select>
+        </div>
 
-        <div className="w-full h-[400px] gap-[20px] overflow-y-auto flex flex-col truncate">
+        <div className="w-full h-0.5 bg-gray-400"></div>
+        <h1 className="text-white font-semibold text-xl">History</h1>
+
+        <div className="w-full flex-1 gap-4 overflow-y-auto flex flex-col">
           {userData.history?.map((his, index) => (
             <div
               key={index}
-              className="text-gray-200 text-[18px] w-full h-[30px]  "
+              className="text-gray-200 text-lg w-full p-2 bg-white/10 rounded-lg shadow-sm"
             >
               {his}
             </div>
           ))}
         </div>
       </div>
-      <button
-        className="min-w-[150px] h-[60px] mt-[30px] text-black font-semibold absolute hidden lg:block top-[20px] right-[20px]  bg-white rounded-full cursor-pointer text-[19px] "
-        onClick={handleLogOut}
-      >
-        Log Out
-      </button>
-      <button
-        className="min-w-[150px] h-[60px] mt-[30px] text-black font-semibold  bg-white absolute top-[100px] right-[20px] rounded-full cursor-pointer text-[19px] px-[20px] py-[10px] hidden lg:block "
-        onClick={() => navigate("/customize")}
-      >
-        Customize your Assistant
-      </button>
-      <div className="w-[300px] h-[400px] flex justify-center items-center overflow-hidden rounded-4xl shadow-lg">
-        <img
-          src={userData?.assistantImage}
-          alt=""
-          className="h-full object-cover"
-        />
-      </div>
-      <h1 className="text-white text-[18px] font-semibold">
-        I'm {userData?.assistantName}
-      </h1>
-      {!aiText && <img src={userImg} alt="" className="w-[200px]" />}
-      {aiText && <img src={aiImg} alt="" className="w-[200px]" />}
 
-      <h1 className="text-white text-[18px] font-semibold text-wrap">
-        {userText ? userText : aiText ? aiText : null}
-      </h1>
-      {/* Floating TTS control: select voice and enable TTS (user gesture) */}
-      <div className="fixed bottom-6 right-6 bg-white text-black px-3 py-2 rounded-xl shadow-lg z-50 flex items-center gap-2">
-        <select
-          value={selectedVoice}
-          onChange={(e) => setSelectedVoice(e.target.value)}
-          className="bg-white text-black p-1 rounded"
-        >
-          {voices.length === 0 && <option>Loading voices...</option>}
-          {voices.map((v) => (
-            <option key={v.name} value={v.name}>
-              {v.name} ({v.lang})
-            </option>
-          ))}
-        </select>
-        {!ttsEnabled ? (
-          <button
-            onClick={enableTTS}
-            className="bg-black text-white px-3 py-1 rounded"
-          >
-            Enable Voice
-          </button>
-        ) : (
-          <span className="text-sm">Voice on</span>
-        )}
+      {/* Main Content */}
+      <div className="flex justify-center items-center flex-col gap-4 flex-1 px-4 max-h-[calc(100vh-200px)] overflow-y-auto">
+        <div className="w-72 h-96 sm:w-80 sm:h-[28rem] flex justify-center items-center overflow-hidden rounded-3xl shadow-2xl border-2 border-white/20">
+          <img
+            src={userData?.assistantImage}
+            alt="Assistant"
+            className="h-full w-full object-cover"
+          />
+        </div>
+        <h1 className="text-white text-xl font-semibold text-center">
+          I'm {userData?.assistantName}
+        </h1>
+        {!aiText && <img src={userImg} alt="User" className="w-48 sm:w-56" />}
+        {aiText && <img src={aiImg} alt="AI" className="w-48 sm:w-56" />}
+
+        <h1 className="text-white text-lg font-semibold text-center max-w-md break-words">
+          {userText ? userText : aiText ? aiText : null}
+        </h1>
       </div>
+
+      {/* Chat Input - Fixed at bottom */}
+      <form
+        onSubmit={handleChatSubmit}
+        className="w-full max-w-md flex items-center gap-3 p-4 bg-white/10 backdrop-blur-md rounded-full shadow-lg border border-white/20 fixed bottom-4 left-1/2 transform -translate-x-1/2"
+      >
+        <input
+          type="text"
+          value={chatInput}
+          onChange={(e) => setChatInput(e.target.value)}
+          placeholder="Type your message..."
+          className="flex-1 bg-transparent text-white placeholder-gray-300 outline-none px-4 py-2 text-base"
+        />
+        <button
+          type="submit"
+          className="bg-gradient-to-r from-blue-500 to-purple-600 text-white p-3 rounded-full hover:from-blue-600 hover:to-purple-700 transition-all duration-200 shadow-md"
+        >
+          <FiSend size={20} />
+        </button>
+      </form>
     </div>
   );
 }

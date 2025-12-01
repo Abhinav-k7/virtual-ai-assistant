@@ -1,4 +1,6 @@
-// Test the JSON extraction and parsing
+//this file is for testing JSON extraction and parsing from a string response
+//this file during deployment we can exclude it
+//// Test the JSON extraction and parsing
 const response = `\`\`\`json
 {
   "type": "general",

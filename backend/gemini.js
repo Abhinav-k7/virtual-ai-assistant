@@ -1,116 +1,247 @@
-import axios from "axios"
+/************************************************************
+ *  MODULE 1 — IMPORTS & AXIOS RETRY CONFIG
+ ************************************************************/
+import axios from "axios";
+import axiosRetry from "axios-retry";
 
-const geminiResponse = async (command, assistantName, userName) => {
-    console.log("\n========== GEMINI RESPONSE FUNCTION START ==========")
+// Configure retries with shorter delays for faster response
+axiosRetry(axios, {
+    retries: 2, // Reduced from 3
+    retryDelay: (retryCount) => retryCount * 500, // 500ms, 1000ms (faster than exponential)
+    retryCondition: (error) => {
+        return axiosRetry.isNetworkOrIdempotentRequestError(error) ||
+            error.response?.status === 429;
+    },
+});
+
+// Response cache to avoid duplicate API calls
+const responseCache = new Map();
+const CACHE_DURATION = 5 * 60 * 1000; // 5 minutes
+
+
+/************************************************************
+ *  MODULE 2 — CACHE MANAGEMENT
+ ************************************************************/
+const getCachedResponse = (cacheKey) => {
+    const cached = responseCache.get(cacheKey);
+    if (cached && Date.now() - cached.timestamp < CACHE_DURATION) {
+        console.log("⚡ [CACHE HIT]", cacheKey);
+        return cached.data;
+    }
+    responseCache.delete(cacheKey);
+    return null;
+};
+
+const setCachedResponse = (cacheKey, data) => {
+    responseCache.set(cacheKey, {
+        data,
+        timestamp: Date.now()
+    });
+};
+
+const createCacheKey = (command) => {
+    return command.toLowerCase().trim();
+};
+
+
+/************************************************************
+ *  MODULE 3 — HELPER: LIST AVAILABLE MODELS (OPTIONAL)
+ ************************************************************/
+const listModels = async (apiKey) => {
     try {
-        const apiKey = process.env.GEMINI_API_KEY
-        const model = process.env.GEMINI_MODEL || "gemini-pro"
+        const res = await axios.get(
+            `https://generativelanguage.googleapis.com/v1/models?key=${apiKey}`,
+            { timeout: 5000 } // 5 second timeout
+        );
+        console.log("Available Models:", res.data.models.map(m => m.name).slice(0, 3));
+    } catch (err) {
+        console.log("Model list fetch skipped (dev mode)");
+    }
+};
 
-        console.log("[1] Function called with:")
-        console.log("    - Command (first 50 chars):", command.substring(0, 50))
-        console.log("    - Assistant Name:", assistantName)
-        console.log("    - User Name:", userName)
-        console.log("[2] Environment loaded:")
-        console.log("    - Model:", model)
-        console.log("    - API Key present:", !!apiKey)
-        console.log("    - API Key length:", apiKey ? apiKey.length : 0)
 
-        // Use v1 API which supports gemini-1.5-flash
-        const apiUrl = `https://generativelanguage.googleapis.com/v1/models/${model}:generateContent?key=${apiKey}`
+/************************************************************
+ *  MODULE 4 — IMPROVED PROMPT WITH CONVERSATION HISTORY
+ ************************************************************/
+const buildPrompt = (command, assistantName, userName, conversationHistory = []) => {
+    // Include last 3 messages from history for minimal context
+    let historyContext = '';
+    if (conversationHistory && conversationHistory.length > 0) {
+        const recentHistory = conversationHistory.slice(-3); // Last 3 messages only
+        historyContext = `\nRecent context:\n`;
+        recentHistory.forEach((msg) => {
+            if (msg.command && msg.response) {
+                historyContext += `Q: ${msg.command}\nA: ${msg.response}\n`;
+            }
+        });
+    }
 
-        console.log("[3] Making API request to Gemini...")
-        console.log("    - URL (first 100 chars):", apiUrl.substring(0, 100) + "...")
+    return `You are ${assistantName}. Respond DIRECTLY and CONCISELY (20-30 words max).
 
-        const prompt = `You are a virtual assistant named ${assistantName} created by ${userName}. 
-You are not Google. You will now behave like a voice-enabled assistant.
-
-Your task is to understand the user's natural language input and respond with a JSON object like this:
-
+${historyContext}
+RESPOND ONLY with valid JSON (no extra text):
 {
-  "type": "general" | "google-search" | "youtube-search" | "youtube-play" | "get-time" | "get-date" | "get-day" | "get-month"|"calculator-open" | "instagram-open" |"facebook-open" |"weather-show"
-  ,
-  "userInput": "<original user input>" {only remove your name from userinput if exists} and agar kisi ne google ya youtube pe kuch search karne ko bola hai to userInput me only bo search baala text jaye,
-
-  "response": "<a short spoken response to read out loud to the user>"
+  "type": "general|google-search|youtube-play|get-time|get-date|get-day|get-month|calculator-open|weather-show|explain|how-to|recommendation",
+  "userInput": "${command.replace(/"/g, '\\"')}",
+  "response": "Direct answer only, 20-50 words max",
+  "searchQuery": "extracted search term (for search/youtube only)"
 }
 
-Instructions:
-- "type": determine the intent of the user.
-- "userinput": original sentence the user spoke.
-- "response": A short voice-friendly reply, e.g., "Sure, playing it now", "Here's what I found", "Today is Tuesday", etc.
+Rules:
+- DIRECT answers only. NO greetings, NO questions back
+- 20-50 words MAX
+- 'general' type for most queries
+- 'google-search' only if user asks to search - EXTRACT search term in searchQuery
+- 'youtube-play' only if user asks to play/watch/open video - EXTRACT video name in searchQuery
+- Do NOT ask follow-up questions or add extra text
 
-Type meanings:
-- "general": if it's a factual or informational question. aur agar koi aisa question puchta hai jiska answer tume pata hai usko bhi general ki category me rakho bas short answer dena
-- "google-search": if user wants to search something on Google .
-- "youtube-search": if user wants to search something on YouTube.
-- "youtube-play": if user wants to directly play a video or song.
-- "calculator-open": if user wants to  open a calculator .
-- "instagram-open": if user wants to  open instagram .
-- "facebook-open": if user wants to open facebook.
--"weather-show": if user wants to know weather
-- "get-time": if user asks for current time.
-- "get-date": if user asks for today's date.
-- "get-day": if user asks what day it is.
-- "get-month": if user asks for the current month.
-
-Important:
-- Use ${userName} agar koi puche tume kisne banaya 
-- Only respond with the JSON object, nothing else.
+User command: ${command}`;
+};
 
 
-now your userInput- ${command}
-`;
+/************************************************************
+ *  MODULE 5 — JSON PARSER
+ ************************************************************/
+const extractJSON = (raw) => {
+    const match = raw.match(/{[\s\S]*}/);
+    if (!match) return null;
+
+    let jsonString = match[0]
+        .replace(/^```(?: json) ?\n ?/, "")
+        .replace(/\n?```$/, "");
+
+    try {
+        return JSON.parse(jsonString);
+    } catch (err) {
+        return null;
+    }
+};
 
 
+/************************************************************
+ *  MODULE 6 — OPTIMIZED GEMINI API CALL (FASTER)
+ ************************************************************/
+const callGeminiAPI = async (model, apiKey, prompt) => {
+    const apiUrl = `https://generativelanguage.googleapis.com/v1/models/${model}:generateContent?key=${apiKey}`;
 
+    const startTime = Date.now();
 
-
-        const result = await axios.post(apiUrl, {
-            "contents": [{
-                "parts": [{ "text": prompt }]
+    const response = await axios.post(apiUrl, {
+        contents: [{
+            parts: [{
+                text: prompt
             }]
-        })
-        console.log("[4] API Request successful!")
-        console.log("    - Status:", result.status)
-        console.log("    - Has data:", !!result.data)
-        console.log("    - Has candidates:", !!result.data.candidates)
-
-        // Check if response has expected structure
-        if (!result.data || !result.data.candidates || !result.data.candidates[0]) {
-            console.error("[ERROR] Unexpected Gemini response structure:")
-            console.error("    - result.data:", !!result.data)
-            console.error("    - candidates:", !!result.data?.candidates)
-            console.error("    - candidates[0]:", !!result.data?.candidates?.[0])
-            console.error("    - Full data:", JSON.stringify(result.data).substring(0, 200))
-            return null
+        }],
+        generationConfig: {
+            temperature: 0.7,
+            maxOutputTokens: 150, // ✅ REDUCED to 150 for concise, natural responses
+            topK: 40,
+            topP: 0.95
         }
+    }, {
+        timeout: 30000 // ✅ INCREASED to 30 seconds (Gemini can be slow)
+    });
 
-        const responseText = result.data.candidates[0].content.parts[0].text
-        console.log("[5] Response text extracted:")
-        console.log("    - Length:", responseText.length)
-        console.log("    - First 100 chars:", responseText.substring(0, 100))
-        console.log("========== GEMINI RESPONSE FUNCTION END (SUCCESS) ==========\n")
-        return responseText
-    } catch (error) {
-        console.error("\n[ERROR] Exception caught in geminiResponse:")
-        console.error("    - Error type:", error.constructor.name)
-        console.error("    - Message:", error.message)
+    const responseTime = Date.now() - startTime;
+    console.log(`⚡ API Response Time: ${responseTime}ms`);
 
-        if (error.response) {
-            console.error("    - HTTP Status:", error.response.status)
-            console.error("    - Status Text:", error.response.statusText)
-            console.error("    - Response data (first 300 chars):", JSON.stringify(error.response.data).substring(0, 300))
+    return response.data.candidates[0].content.parts[0].text;
+};
 
-            if (error.response.data?.error) {
-                console.error("    - API Error:", JSON.stringify(error.response.data.error, null, 2))
+
+/************************************************************
+ *  MODULE 7 — MAIN FUNCTION (WITH CONVERSATION HISTORY)
+ ************************************************************/
+const geminiResponse = async (command, assistantName, userName, conversationHistory = []) => {
+    console.log("\n🚀 Processing command:", command);
+
+    // Special handling for "who created you" to say username instead of Google
+    if (command.toLowerCase().includes("who created you")) {
+        return {
+            type: "general",
+            userInput: command,
+            response: `${userName} created me.`,
+            searchQuery: ""
+        };
+    }
+
+    // Special handling for "open youtube" to open in browser
+    if (command.toLowerCase().includes("open youtube")) {
+        return {
+            type: "youtube-play",
+            userInput: command,
+            response: "Opening YouTube in browser.",
+            searchQuery: "youtube"
+        };
+    }
+
+    // Check cache first
+    const cacheKey = createCacheKey(command);
+    const cached = getCachedResponse(cacheKey);
+    if (cached) {
+        return cached;
+    }
+
+    const apiKey = process.env.GEMINI_API_KEY;
+    let model = process.env.GEMINI_MODEL || "gemini-2.0-flash"; // Faster model
+    const fallbackModel = "gemini-1.5-flash"; // Also fast
+
+    const prompt = buildPrompt(command, assistantName, userName, conversationHistory);
+
+    let raw;
+    try {
+        raw = await callGeminiAPI(model, apiKey, prompt);
+    } catch (err) {
+        // Handle timeout errors specifically
+        if (err.code === 'ECONNABORTED' || err.message.includes('timeout')) {
+            console.warn(`⚠️ Model ${model} timeout (${err.message}). Trying: ${fallbackModel}`);
+            try {
+                raw = await callGeminiAPI(fallbackModel, apiKey, prompt);
+            } catch (fallbackErr) {
+                console.error("❌ Fallback model also failed:", fallbackErr.message);
+                return {
+                    type: "general",
+                    userInput: command,
+                    response: "Sorry, the AI service is taking too long to respond. Please try again."
+                };
+            }
+        } else if (err.response?.status === 404) {
+            console.log(`⚠️ Model ${model} not found. Trying: ${fallbackModel}`);
+            try {
+                raw = await callGeminiAPI(fallbackModel, apiKey, prompt);
+            } catch (fallbackErr) {
+                console.error("❌ Fallback model also failed:", fallbackErr.message);
+                return {
+                    type: "general",
+                    userInput: command,
+                    response: "Sorry, I'm temporarily unavailable."
+                };
             }
         } else {
-            console.error("    - No response object (network error?)")
-            console.error("    - Full error:", error.toString())
+            console.error("❌ Gemini API error:", err.message);
+            return {
+                type: "general",
+                userInput: command,
+                response: "Error connecting to AI service. Please try again."
+            };
         }
-        console.error("========== GEMINI RESPONSE FUNCTION END (ERROR) ==========\n")
-        return null
     }
-}
 
-export default geminiResponse
+    const parsed = extractJSON(raw);
+
+    if (!parsed) {
+        console.warn("⚠️ Failed to parse JSON response");
+        return {
+            type: "general",
+            userInput: command,
+            response: "Sorry, I couldn't understand that."
+        };
+    }
+
+    // Cache the response
+    setCachedResponse(cacheKey, parsed);
+
+    return parsed;
+};
+
+export default geminiResponse;

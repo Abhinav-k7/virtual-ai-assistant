@@ -1,3 +1,6 @@
+// this file is only for testing the Gemini API directly
+//this file is not important for production use and can be ignored and during deployment we can exclude it
+
 import axios from "axios";
 import dotenv from "dotenv";
 dotenv.config();

@@ -1,177 +1,237 @@
-import uploadOnCloudinary from "../config/cloudinary.js"
-import geminiResponse from "../gemini.js"
-import User from "../models/user.model.js"
-import moment from "moment"
+import uploadOnCloudinary from "../config/cloudinary.js";
+import geminiResponse from "../gemini.js";
+import User from "../models/user.model.js";
+import moment from "moment";
+
+/* ============================================================
+   SECTION 1: GET CURRENT USER
+   ============================================================ */
 export const getCurrentUser = async (req, res) => {
-   try {
-      const userId = req.userId
-      const user = await User.findById(userId).select("-password")
-      if (!user) {
-         return res.status(400).json({ message: "user not found" })
-      }
+    try {
+        const user = await User.findById(req.userId).select("-password");
 
-      return res.status(200).json(user)
-   } catch (error) {
-      return res.status(400).json({ message: "get current user error" })
-   }
-}
+        if (!user)
+            return res.status(400).json({ message: "User not found" });
 
+        // ✅ Sanitize history: convert old string entries to objects
+        if (user.history && Array.isArray(user.history)) {
+            user.history = user.history.map((item) => {
+                if (typeof item === 'string') {
+                    return { command: item, response: '', type: 'general', timestamp: new Date() };
+                }
+                return item;
+            });
+        }
+
+        return res.status(200).json(user);
+
+    } catch (error) {
+        return res.status(400).json({ message: "Error fetching current user" });
+    }
+};
+
+/* ============================================================
+   SECTION 2: UPDATE ASSISTANT DETAILS
+   ============================================================ */
 export const updateAssistant = async (req, res) => {
-   try {
-      const { assistantName, imageUrl } = req.body
-      let assistantImage;
-      if (req.file) {
-         assistantImage = await uploadOnCloudinary(req.file.path)
-      } else {
-         assistantImage = imageUrl
-      }
+    try {
+        const { assistantName, imageUrl } = req.body;
 
-      const user = await User.findByIdAndUpdate(req.userId, {
-         assistantName, assistantImage
-      }, { new: true }).select("-password")
-      return res.status(200).json(user)
+        // Upload new image or keep existing one
+        const assistantImage = req.file
+            ? await uploadOnCloudinary(req.file.path)
+            : imageUrl;
 
+        const updatedUser = await User.findByIdAndUpdate(
+            req.userId,
+            { assistantName, assistantImage },
+            { new: true }
+        ).select("-password");
 
-   } catch (error) {
-      return res.status(400).json({ message: "updateAssistantError user error" })
-   }
-}
+        return res.status(200).json(updatedUser);
 
+    } catch (error) {
+        return res.status(400).json({ message: "Error updating assistant" });
+    }
+};
 
+/* ============================================================
+   SECTION 3: CORE AI ASSISTANT HANDLER (OPTIMIZED)
+   ============================================================ */
 export const askToAssistant = async (req, res) => {
-   try {
-      console.log("=== askToAssistant called ===")
-      console.log("req.userId:", req.userId)
-      console.log("req.body:", req.body)
+    try {
+        const startTime = Date.now();
+        const { command } = req.body;
 
-      const { command } = req.body
-      if (!command) {
-         return res.status(400).json({ response: "Command is required" })
-      }
+        if (!command)
+            return res.status(400).json({ response: "Command is required" });
 
-      if (!req.userId) {
-         return res.status(401).json({ response: "User not authenticated" })
-      }
+        console.log(`🎯 Processing command: "${command}"`);
 
-      const user = await User.findById(req.userId);
-      console.log("User found:", user ? "yes" : "no")
+        const user = await User.findById(req.userId);
 
-      if (!user) {
-         return res.status(400).json({ response: "User not found" })
-      }
+        if (!user)
+            return res.status(400).json({ response: "User not found" });
 
-      user.history.push(command)
-      await user.save()
-      const userName = user.name
-      const assistantName = user.assistantName
+        const assistantName = user.assistantName;
+        const userName = user.name;
 
-      console.log("Calling geminiResponse with:", { command, assistantName, userName })
-      const result = await geminiResponse(command, assistantName, userName)
-      console.log("Gemini Result:", result)
+        /* CALL GEMINI FOR AI RESPONSE WITH CONVERSATION HISTORY */
+        const responseText = await geminiResponse(command, assistantName, userName, user.history);
 
-      if (!result) {
-         console.error("CRITICAL: Gemini returned null/undefined - check backend terminal for error logs")
-         // Return detailed error response so frontend can see what happened
-         return res.status(500).json({
-            response: "Gemini API returned empty response",
-            details: "Check backend logs - Gemini call failed silently"
-         })
-      }
-
-      const jsonMatch = result.match(/{[\s\S]*}/)
-      if (!jsonMatch) {
-         console.error("No JSON found in response:", result)
-         return res.status(400).json({ response: "sorry, i can't understand" })
-      }
-
-      let gemResult;
-      try {
-         // Extract JSON and handle markdown code blocks
-         let jsonString = jsonMatch[0]
-         // Remove markdown code block formatting if present
-         jsonString = jsonString.replace(/^```(?:json)?\n?/, '').replace(/\n?```$/, '')
-
-         gemResult = JSON.parse(jsonString)
-      } catch (parseError) {
-         console.error("JSON Parse Error:", parseError.message)
-         console.error("Failed to parse:", jsonMatch[0])
-         return res.status(400).json({ response: "Failed to parse response" })
-      }
-
-      console.log("Parsed Gemini Result:", gemResult)
-      const type = gemResult.type
-
-      switch (type) {
-         case 'get-date':
-            return res.json({
-               type,
-               userInput: gemResult.userInput,
-               response: `current date is ${moment().format("YYYY-MM-DD")}`
+        if (!responseText) {
+            return res.status(500).json({
+                response: "Gemini API returned empty response"
             });
-         case 'get-time':
-            return res.json({
-               type,
-               userInput: gemResult.userInput,
-               response: `current time is ${moment().format("hh:mm A")}`
-            });
-         case 'get-day':
-            return res.json({
-               type,
-               userInput: gemResult.userInput,
-               response: `today is ${moment().format("dddd")}`
-            });
-         case 'get-month':
-            return res.json({
-               type,
-               userInput: gemResult.userInput,
-               response: `today is ${moment().format("MMMM")}`
-            });
-         case 'google-search':
-         case 'youtube-search':
-         case 'youtube-play':
-         case 'general':
-         case "calculator-open":
-         case "instagram-open":
-         case "facebook-open":
-         case "weather-show":
-            return res.json({
-               type,
-               userInput: gemResult.userInput,
-               response: gemResult.response,
-            });
+        }
 
-         default:
-            // Defensive fallback: if Gemini returned a type we don't expect,
-            // treat it as a 'general' response instead of returning 400.
-            console.warn("Warning: Unknown gemini type received:", type)
-            console.warn("Full gemResult:", gemResult)
+        /* Parse response (gemini.js now returns object directly) */
+        const gemResult = typeof responseText === 'object'
+            ? responseText
+            : (() => {
+                const jsonMatch = responseText.match(/{[\s\S]*}/);
+                if (!jsonMatch) return null;
 
-            return res.json({
-               type: 'general',
-               userInput: gemResult.userInput || (gemResult.input || ''),
-               response: gemResult.response || "Sorry, I couldn't process that request."
-            })
-      }
+                let jsonString = jsonMatch[0]
+                    .replace(/^```(?:json)?\n?/, "")
+                    .replace(/\n?```$/, "");
 
-   } catch (error) {
-      console.error("Ask Assistant Error:", error.message)
-      console.error("Stack:", error.stack)
-      return res.status(500).json({
-         response: "ask assistant error",
-         error: error.message,
-         type: error.constructor.name
-      })
-   }
+                try {
+                    return JSON.parse(jsonString);
+                } catch (error) {
+                    return null;
+                }
+            })();
+
+        if (!gemResult) {
+            return res.status(400).json({ response: "Sorry, I can't understand" });
+        }
+
+        const { type, userInput, response } = gemResult;
+
+        /* SAVE BOTH COMMAND AND RESPONSE TO HISTORY */
+        user.history.push({
+            command: command,
+            response: response,
+            type: type,
+            timestamp: new Date()
+        });
+        user.save().catch(err => console.error("History save error:", err.message));
+
+        /* TYPE-BASED RESPONSE HANDLING */
+        const responseMap = {
+            "get-date": {
+                type,
+                userInput,
+                response: `Current date is ${moment().format("YYYY-MM-DD")}`
+            },
+            "get-time": {
+                type,
+                userInput,
+                response: `Current time is ${moment().format("hh:mm A")}`
+            },
+            "get-day": {
+                type,
+                userInput,
+                response: `Today is ${moment().format("dddd")}`
+            },
+            "get-month": {
+                type,
+                userInput,
+                response: `This month is ${moment().format("MMMM")}`
+            }
+        };
+
+        const finalResponse = responseMap[type] || { type, userInput, response };
+
+        const responseTime = Date.now() - startTime;
+        console.log(`✅ Response sent in ${responseTime}ms`);
+
+        return res.json({
+            ...finalResponse,
+            responseTime
+        });
+
+    } catch (error) {
+        console.error("❌ Assistant error:", error.message);
+        return res.status(500).json({
+            response: "Error executing assistant command",
+            error: error.message
+        });
+    }
+};
+
+/* ============================================================
+   SECTION 4: PUBLIC ENDPOINT FOR CHROME EXTENSION
+   ============================================================ */
+export const askToAssistantPublic = async (req, res) => {
+    try {
+        const startTime = Date.now();
+        const { command } = req.body;
+
+        if (!command)
+            return res.status(400).json({ response: "Command is required" });
+
+        console.log(`🎯 [PUBLIC] Processing command: "${command}"`);
+
+        // Use default assistant name and user name for public requests
+        const assistantName = "Nova";
+        const userName = "User";
+
+        /* CALL GEMINI FOR AI RESPONSE */
+        const responseText = await geminiResponse(command, assistantName, userName);
+
+        if (!responseText) {
+            return res.status(500).json({
+                response: "Gemini API returned empty response"
+            });
+        }
+
+        /* Parse response (gemini.js now returns object directly) */
+        const gemResult = typeof responseText === 'object'
+            ? responseText
+            : (() => {
+                const jsonMatch = responseText.match(/{[\s\S]*}/);
+                if (!jsonMatch) return null;
+
+                let jsonString = jsonMatch[0]
+                    .replace(/^```(?:json)?\n?/, "")
+                    .replace(/\n?```$/, "");
+
+                try {
+                    return JSON.parse(jsonString);
+                } catch (error) {
+                    return null;
+                }
+            })();
+
+        if (!gemResult) {
+            return res.status(500).json({
+                response: responseText || "Could not parse Gemini response"
+            });
+        }
+
+        const duration = Date.now() - startTime;
+        console.log(`✅ [PUBLIC] Response ready in ${duration}ms`);
+
+        return res.status(200).json({
+            response: gemResult.response || "No response generated",
+            action: gemResult.action || "respond"
+        });
+
+    } catch (error) {
+        console.error("❌ Public Assistant error:", error.message);
+        return res.status(500).json({
+            response: "Error executing assistant command",
+            error: error.message
+        });
+    }
+};
+
+/* ============================================================
+   SECTION 5: DEV TESTING -- CAN BE REMOVED IN PRODUCTION
+   ============================================================ */
+// This is for local debugging only
+if (process.env.NODE_ENV === 'development') {
+    console.log("ℹ️ Running in development mode");
 }
-
-fetch('http://localhost:8000/api/user/asktoassistant', {
-   method: 'POST',
-   headers: { 'Content-Type': 'application/json' },
-   credentials: 'include',
-   body: JSON.stringify({ command: 'hello' })
-})
-   .then(r => {
-      console.log('Status:', r.status);
-      return r.json().then(data => console.log('Body:', data));
-   })
-   .catch(console.error);

@@ -1,0 +1,28 @@
+{
+  "manifest_version": 3,
+  "name": "AI Assistant Screen Capture",
+  "version": "1.0.1",
+  "description": "Capture screens, extract text, and ask AI questions on any website",
+  "permissions": [
+    "activeTab",
+    "scripting",
+    "storage"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content.js"],
+      "run_at": "document_start"
+    }
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "AI Assistant Screen Capture"
+  }
+}

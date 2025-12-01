@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>AI Assistant Popup</title>
+    <style>
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+
+      body {
+        width: 350px;
+        padding: 16px;
+        background: linear-gradient(135deg, #9333ea 0%, #3b82f6 100%);
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        color: white;
+      }
+
+      h1 {
+        font-size: 18px;
+        margin-bottom: 12px;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+
+      .status {
+        padding: 12px;
+        background: rgba(0, 0, 0, 0.2);
+        border-radius: 6px;
+        font-size: 13px;
+        margin-bottom: 12px;
+        border-left: 3px solid #fbbf24;
+      }
+
+      .info {
+        font-size: 12px;
+        color: #d1d5db;
+        line-height: 1.6;
+        margin-bottom: 12px;
+      }
+
+      .button-group {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+      }
+
+      button {
+        padding: 10px 16px;
+        border: none;
+        border-radius: 6px;
+        font-weight: 600;
+        font-size: 13px;
+        cursor: pointer;
+        transition: all 0.2s;
+      }
+
+      .btn-primary {
+        background: white;
+        color: #9333ea;
+      }
+
+      .btn-primary:hover {
+        background: #f3f4f6;
+        transform: translateY(-2px);
+      }
+
+      .btn-secondary {
+        background: rgba(255, 255, 255, 0.2);
+        color: white;
+        border: 1px solid rgba(255, 255, 255, 0.3);
+      }
+
+      .btn-secondary:hover {
+        background: rgba(255, 255, 255, 0.3);
+      }
+
+      .features {
+        background: rgba(0, 0, 0, 0.2);
+        padding: 12px;
+        border-radius: 6px;
+        font-size: 11px;
+        margin-top: 12px;
+      }
+
+      .features ul {
+        margin-left: 16px;
+        color: #d1d5db;
+      }
+
+      .features li {
+        margin: 4px 0;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>📸 Screen Capture AI</h1>
+
+    <div class="status">
+      ✅ Extension is active on this page! Click the camera button at top-right.
+    </div>
+
+    <div class="info">
+      💡 <strong>How to use:</strong>
+      <ol style="margin-left: 16px; margin-top: 8px">
+        <li>Click the floating 📷 button (top-right corner)</li>
+        <li>Capture the current page screenshot</li>
+        <li>Ask any question about the captured content</li>
+        <li>AI will analyze and respond</li>
+      </ol>
+    </div>
+
+    <div class="features">
+      <strong>Features:</strong>
+      <ul>
+        <li>✨ Works on any website (Google, YouTube, etc.)</li>
+        <li>🔍 Automatic text extraction with OCR</li>
+        <li>📝 Edit extracted text before asking</li>
+        <li>🤖 AI-powered analysis</li>
+        <li>🔊 Voice response</li>
+      </ul>
+    </div>
+
+    <div class="button-group" style="margin-top: 16px">
+      <button class="btn-secondary" id="openCaptureBtn">
+        🎯 Open Capture Now
+      </button>
+      <button class="btn-secondary" id="settingsBtn">⚙️ Settings</button>
+    </div>
+    <script src="popup.js"></script>
+  </body>
+</html>

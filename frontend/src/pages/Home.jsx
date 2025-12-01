@@ -39,6 +39,7 @@ function Home() {
   // Refs for outside click detection
   const hamburgerRef = useRef(null);
   const profileDropdownRef = useRef(null);
+  const historyContainerRef = useRef(null); // ✅ Ref for history container auto-scroll
 
   const handleLogOut = async () => {
     try {
@@ -92,6 +93,13 @@ function Home() {
 
   const speak = useCallback(
     (text) => {
+      // Stop recognition before speaking to prevent picking up own voice
+      try {
+        recognition.stop();
+      } catch (e) {
+        // Already stopped, no action needed
+      }
+
       // TTS is enabled by default, speak directly
       const utterence = new SpeechSynthesisUtterance(text);
       // prefer selected voice, fallback to hi-IN or first available
@@ -141,13 +149,33 @@ function Home() {
     if (selectedVoice) localStorage.setItem("ttsVoice", selectedVoice);
   }, [selectedVoice]);
 
+  // ✅ Auto-scroll history to bottom when new messages arrive
+  useEffect(() => {
+    if (historyContainerRef.current) {
+      setTimeout(() => {
+        historyContainerRef.current.scrollTop =
+          historyContainerRef.current.scrollHeight;
+      }, 0);
+    }
+  }, [userData?.history]);
+
+  // ✅ Auto-scroll history to bottom when new messages are added
+  useEffect(() => {
+    if (historyContainerRef.current) {
+      setTimeout(() => {
+        historyContainerRef.current.scrollTop =
+          historyContainerRef.current.scrollHeight;
+      }, 0);
+    }
+  }, [userData?.history]);
+
   const handleCommand = useCallback(
     (data) => {
-      const { type, userInput, response } = data;
+      const { type, userInput, searchQuery, response } = data;
       speak(response);
 
       if (type === "google-search") {
-        const query = encodeURIComponent(userInput);
+        const query = encodeURIComponent(searchQuery || userInput);
         window.open(`https://www.google.com/search?q=${query}`, "_blank");
       }
       if (type === "calculator-open") {
@@ -164,7 +192,7 @@ function Home() {
       }
 
       if (type === "youtube-search" || type === "youtube-play") {
-        const query = encodeURIComponent(userInput);
+        const query = encodeURIComponent(searchQuery || userInput);
         window.open(
           `https://www.youtube.com/results?search_query=${query}`,
           "_blank"
@@ -177,19 +205,30 @@ function Home() {
   const handleChatSubmit = async (e) => {
     e.preventDefault();
     if (!chatInput.trim()) return;
-    setUserText(chatInput);
-    setAiText("");
-    const data = await getGeminiResponse(chatInput);
-    console.log("Chat Response data:", data);
-    if (data && data.response) {
-      handleCommand(data);
-      setAiText(data.response);
-    } else {
-      speak("Sorry, I couldn't understand that. Please try again.");
-      setAiText("Error: No response");
-    }
-    setChatInput("");
-    setUserText("");
+
+    const sentMessage = chatInput; // Store message
+    setChatInput(""); // Instantly clear textbox
+
+    // Show user message after delay (like WhatsApp typing effect)
+    setTimeout(() => {
+      setUserText(sentMessage);
+    }, 1500);
+
+    // Process AI response with same delay
+    setTimeout(async () => {
+      const data = await getGeminiResponse(sentMessage);
+      console.log("Chat Response data:", data);
+
+      if (data && data.response) {
+        handleCommand(data);
+        setAiText(data.response);
+      } else {
+        speak("Sorry, I couldn't understand that. Please try again.");
+        setAiText("Error: No response");
+      }
+
+      setUserText("");
+    }, 1500);
   };
 
   useEffect(() => {
@@ -280,25 +319,93 @@ function Home() {
     };
 
     recognition.onresult = async (e) => {
-      const transcript = e.results[e.results.length - 1][0].transcript.trim();
+      // Don't process audio while TTS is speaking
+      if (isSpeakingRef.current) {
+        console.log("🔊 TTS speaking, ignoring audio input");
+        return;
+      }
+
+      const transcript = e.results[e.results.length - 1][0].transcript
+        .trim()
+        .toLowerCase();
+      console.log("🎤 Recognized:", transcript);
+
+      // Define wake words
+      const wakeWords = ["hello", "hey", "hi", "hey nova"];
+      const assistantNameLower = userData.assistantName?.toLowerCase() || "";
+
+      // Check if transcript starts with any wake word
+      let hasWakeWord = false;
+      let userCommand = transcript;
+
+      // Check for standard wake words
+      for (const word of wakeWords) {
+        if (transcript.startsWith(word)) {
+          hasWakeWord = true;
+          // Remove wake word and any trailing punctuation/spaces (e.g., "hello, what time is it" -> "what time is it")
+          userCommand = transcript
+            .replace(new RegExp(`^${word}[\\s,\\.!?]*`), "")
+            .trim();
+          break;
+        }
+      }
+
+      // Check if it starts with assistant name as wake word
       if (
-        transcript.toLowerCase().includes(userData.assistantName.toLowerCase())
+        !hasWakeWord &&
+        assistantNameLower &&
+        transcript.startsWith(assistantNameLower)
       ) {
+        hasWakeWord = true;
+        // Remove assistant name and any trailing punctuation/spaces (e.g., "nova, what time is it" -> "what time is it")
+        userCommand = transcript
+          .replace(new RegExp(`^${assistantNameLower}[\\s,\\.!?]*`), "")
+          .trim();
+      }
+
+      // If no wake word detected, ignore
+      if (!hasWakeWord) {
+        console.log("❌ No wake word detected, ignoring");
+        return;
+      }
+
+      // Process command only if we have text after removing wake word
+      if (userCommand.length > 0) {
         setAiText("");
-        setUserText(transcript);
-        recognition.stop();
-        isRecognizingRef.current = false;
-        setListening(false);
-        const data = await getGeminiResponse(transcript);
-        console.log("Response data:", data);
+        setUserText(userCommand);
+
+        // ✅ Keep recognition RUNNING - don't stop it
+        console.log("📝 Processing command:", userCommand);
+
+        const data = await getGeminiResponse(userCommand);
+        console.log("✅ Response data:", data);
+
         if (data && data.response) {
           handleCommand(data);
           setAiText(data.response);
+
+          // ✅ After response, keep listening for next command
+          if (isMounted && !isSpeakingRef.current) {
+            setTimeout(() => {
+              if (isMounted) {
+                try {
+                  recognition.start();
+                  console.log("🎧 Ready for next command");
+                } catch (e) {
+                  if (e.name !== "InvalidStateError") console.error(e);
+                }
+              }
+            }, 500);
+          }
         } else {
           speak("Sorry, I couldn't understand that. Please try again.");
           setAiText("Error: No response");
         }
+
         setUserText("");
+      } else {
+        // User said only the wake word with no command
+        console.log("⏸️ Only wake word detected, waiting for command");
       }
     };
 
@@ -383,7 +490,7 @@ function Home() {
           Customize your Assistant
         </button>
 
-        {/* Voice Selector */}
+        {/* Note: Screen Capture button is now always visible as floating button in top-right corner */}
         <div className="flex flex-col gap-3">
           <label className="text-white font-semibold text-lg">
             Select accent of your assistant
@@ -407,15 +514,30 @@ function Home() {
         <div className="w-full h-0.5 bg-gray-400"></div>
         <h1 className="text-white font-semibold text-xl">History</h1>
 
-        <div className="w-full flex-1 gap-4 overflow-y-auto flex flex-col">
-          {userData.history?.map((his, index) => (
-            <div
-              key={index}
-              className="text-gray-200 text-lg w-full p-2 bg-white/10 rounded-lg shadow-sm"
-            >
-              {his}
-            </div>
-          ))}
+        <div
+          ref={historyContainerRef}
+          className="w-full flex-1 gap-4 overflow-y-auto flex flex-col"
+        >
+          {userData.history?.map((his, index) => {
+            // Handle both old string format and new object format
+            const command = typeof his === "string" ? his : his?.command || "";
+            const response = typeof his === "object" ? his?.response : "";
+
+            return (
+              <div key={index} className="space-y-2">
+                {/* User Message */}
+                <div className="text-blue-300 text-sm bg-blue-900/30 p-2 rounded-lg">
+                  <span className="font-semibold">You:</span> {command}
+                </div>
+                {/* Assistant Response */}
+                {response && (
+                  <div className="text-green-300 text-sm bg-green-900/30 p-2 rounded-lg">
+                    <span className="font-semibold">Assistant:</span> {response}
+                  </div>
+                )}
+              </div>
+            );
+          })}
         </div>
       </div>
 
@@ -438,6 +560,8 @@ function Home() {
           {userText ? userText : aiText ? aiText : null}
         </h1>
       </div>
+
+      {/* 📸 Screen capture is now available via Chrome Extension */}
 
       {/* Chat Input - Fixed at bottom */}
       <form

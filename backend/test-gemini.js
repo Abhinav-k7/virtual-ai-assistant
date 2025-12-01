@@ -1,3 +1,7 @@
+// --- IGNORE ---
+// this file is for testing the Gemini API integration
+//this file is not important for production use and can be ignored and during deployment we can exclude it
+
 import dotenv from "dotenv"
 dotenv.config()
 import geminiResponse from "./gemini.js"
